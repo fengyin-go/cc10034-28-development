@@ -77,5 +77,20 @@ npm run dev
 - 列表接口统一返回 `{ items, total, page, size }`，动作接口统一返回 `{ ok, message }`。
 - 状态流转只允许在 `app/services` 里改，路由层不做业务判断。
 
+## 投递尝试与回执（路由分发 × 审计轨迹）
+
+- 路由分发把每次发送（主端/备端）按实际发送位置落为投递尝试记录，持久化在
+  `backend/app/delivery.py` 的投递台账（默认 `backend/data/delivery_ledger.json`，
+  可用 `DELIVERY_LEDGER_PATH` 覆盖），重开进程后回执详情仍能查到每次尝试。
+- 回执按真实发送身份保存；同一逻辑事件只能完成一次（逻辑交付计数 0/1），
+  相同回执重试不增加交付数；主端迟到的成功回执与备端回执都完整保留。
+- 审计轨迹按原事件号关联本次收到的真实回执；若进程在审计关联可查之前中断，
+  重开时自动从台账幂等恢复关联，值班员重开详情即可核对是否还要重放。
+- 重放已完成的事件不会再次领取数据，返回本次选用的有效接收凭证。
+- 接口：`POST /api/route_dispatcher/dispatch`、`POST /api/route_dispatcher/receipts`、
+  `GET /api/route_dispatcher/deliveries[/{event_id}]`、
+  `POST /api/route_dispatcher/deliveries/{event_id}/replay`、
+  `GET /api/audit_trail/events/{event_id}`。
+
 领域：数据工程
 子方向：数仓与数据湖

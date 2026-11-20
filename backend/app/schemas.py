@@ -29,3 +29,23 @@ class EntryPayload(BaseModel):
 class ActionPayload(BaseModel):
     action: str
     remark: str | None = None
+
+
+class DispatchPayload(BaseModel):
+    """路由分发单事件投递请求。"""
+
+    event_id: str
+    primary_target: str
+    backup_target: str = ""
+    primary_outcome: str = "已发送"
+    payload: dict[str, Any] = Field(default_factory=dict)
+
+
+class ReceiptPayload(BaseModel):
+    """下游消费端回执登记请求。"""
+
+    event_id: str
+    target: str
+    receipt_id: str
+    sender: str
+    result: str = "成功"

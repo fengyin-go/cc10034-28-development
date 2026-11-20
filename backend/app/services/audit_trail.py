@@ -2,12 +2,16 @@
 
 上游：所有服务模块都会写入审计日志到 pipeline_bus
 消费：审计查询消费端通过本服务查询历史轨迹
+
+事件级审计详情按原事件号关联本次收到的真实回执（来自路由分发的
+持久化投递台账），值班员重开详情即可核对事件是否还要重放。
 """
 from __future__ import annotations
 
 from datetime import datetime
 from typing import Any
 
+from app.delivery import STATUS_COMPLETED, delivery_ledger, sync_receipt_audits
 from app.services.base import BaseModuleService
 from app.pipeline import pipeline_bus
 
@@ -97,6 +101,67 @@ class AuditTrailService(BaseModuleService):
             "required_operation_coverage": op_coverage,
             "all_required_covered": all_covered,
             "compliance_status": "合规" if all_covered else "部分覆盖",
+        }
+
+    def recover_receipt_associations(self) -> int:
+        """从投递台账恢复回执的审计关联（幂等），返回本次补写条数。
+
+        回执随投递尝试落库后，若进程在审计关联可查之前中断，重开时
+        按原事件号重建关联，避免查不到真实接收而把已完成事件再次重放。
+        """
+        return sync_receipt_audits()
+
+    def event_detail(self, event_id: str) -> dict[str, Any]:
+        """事件审计详情：按原事件号汇总真实回执、审计轨迹与重放判定。
+
+        读取前先幂等补齐回执关联，保证值班员重新进入详情时看到的
+        是恢复后的完整状态，而不是崩溃瞬间的半成品。
+        """
+        event_id = (event_id or "").strip()
+        sync_receipt_audits()
+        record = delivery_ledger.get_event(event_id)
+        entries = [
+            dict(entry)
+            for entry in pipeline_bus.audit_log
+            if entry.get("目标对象") == event_id
+        ]
+        if record is None:
+            return {
+                "event_id": event_id,
+                "found": False,
+                "delivery": None,
+                "receipts": [],
+                "audit_entries": entries,
+                "replay_needed": False,
+                "message": f"事件 {event_id} 没有投递记录",
+            }
+        receipts: list[dict[str, Any]] = []
+        for attempt in record.get("attempts", []):
+            for receipt in attempt.get("receipts", []):
+                receipts.append(dict(receipt))
+        completed = record.get("status") == STATUS_COMPLETED
+        delivery = {
+            "status": record.get("status"),
+            "delivery_count": record.get("delivery_count", 0),
+            "effective_receipt_id": record.get("effective_receipt_id"),
+            "claimable": not completed,
+            "attempt_count": len(record.get("attempts", [])),
+        }
+        if completed:
+            message = (
+                f"事件 {event_id} 已完成投递（逻辑交付计数 "
+                f"{delivery['delivery_count']}），无需重放"
+            )
+        else:
+            message = f"事件 {event_id} 尚未完成投递，可领取重放"
+        return {
+            "event_id": event_id,
+            "found": True,
+            "delivery": delivery,
+            "receipts": receipts,
+            "audit_entries": entries,
+            "replay_needed": not completed,
+            "message": message,
         }
 
     def run_action(self, entry_id: int, action: str) -> tuple[dict[str, Any] | None, str]:

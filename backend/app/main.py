@@ -5,14 +5,26 @@
 """
 from __future__ import annotations
 
+from contextlib import asynccontextmanager
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.config import settings
+from app.delivery import sync_receipt_audits
 from app.routers import ROUTERS
 from app.store import store
 
-app = FastAPI(title="实时数仓CDC变更捕获中心", version="1.0.0")
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # 回执恢复：投递尝试已落库但进程在审计关联可查之前中断时，
+    # 重开后按原事件号把真实回执补回审计轨迹，避免已完成事件被再次领取重放。
+    sync_receipt_audits()
+    yield
+
+
+app = FastAPI(title="实时数仓CDC变更捕获中心", version="1.0.0", lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
